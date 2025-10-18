@@ -25,7 +25,7 @@ class Strategy:
     def __init__(self) -> None:
         # ===== CONFIGURATION =====
         self.TRADE_TICKER = Ticker.LTC
-        self.BOOK_THRESHOLD = 1.5  # Strong book imbalance needed
+        self.BOOK_THRESHOLD = 1.7  # Strong book imbalance needed
         self.FLOW_MIN = 0.95  # Flow must be between 0.95-1.05 (neutral)
         self.FLOW_MAX = 1.05
         self.TRADE_WINDOW = 10
@@ -45,6 +45,11 @@ class Strategy:
         
         # Timing
         self.last_update = defaultdict(float)
+        
+        # Performance tracking
+        self.buy_fills = 0
+        self.sell_fills = 0
+        self.last_print_time = time.time()
         
         if self.TRADE_TICKER:
             print(f"Market maker initialized - trading {self.TRADE_TICKER.name} only")
@@ -104,6 +109,21 @@ class Strategy:
         if not self.should_trade(ticker):
             return
         
+        # Track fills
+        if side == Side.BUY:
+            self.buy_fills += 1
+        else:
+            self.sell_fills += 1
+        
+        # Print stats every 30 seconds
+        current_time = time.time()
+        if current_time - self.last_print_time >= 30:
+            total_trades = self.buy_fills + self.sell_fills
+            print(f"=== 30s Stats ===")
+            print(f"Total trades: {total_trades} (Buys: {self.buy_fills}, Sells: {self.sell_fills})")
+            print(f"=================")
+            self.last_print_time = current_time
+        
         #print(f"Fill: {side.name} {quantity} {ticker.name} @ {price:.2f}")
     
     def get_book_imbalance(self, ticker: Ticker) -> float:
@@ -135,14 +155,14 @@ class Strategy:
         return aggressive_buys / aggressive_sells
     
     def update_quotes(self, ticker: Ticker):
-        """Market make when book is imbalanced BUT flow is neutral"""
+        """Biased market making with shifted mid"""
         if not self.bids[ticker] or not self.asks[ticker]:
             return
         
         book_imbalance = self.get_book_imbalance(ticker)
         flow_imbalance = self.get_flow_imbalance(ticker)
-        
-        #print(f"{ticker.name} - Book: {book_imbalance:.2f}, Flow: {flow_imbalance:.2f}")
+
+        print(f"{ticker.name} - Book: {book_imbalance:.2f}, Flow: {flow_imbalance:.2f}")
         
         for order_id in self.active_orders[ticker]:
             cancel_order(ticker, order_id)
@@ -152,36 +172,35 @@ class Strategy:
         best_ask = min(self.asks[ticker].keys())
         mid = (best_bid + best_ask) / 2
         spread = best_ask - best_bid
-        half_spread = spread / 2
         
         # CHECK: Flow must be neutral (avoid aggressive informed traders)
         flow_is_neutral = self.FLOW_MIN <= flow_imbalance <= self.FLOW_MAX
         
         if not flow_is_neutral:
-            #print(f"Flow not neutral ({flow_imbalance:.2f}) - avoiding adverse selection")
             return
         
-        # Now check book imbalance (flow is safe)
+        # Exploit book imbalance with shifted mid
         if book_imbalance > self.BOOK_THRESHOLD:
-            # BULLISH book + neutral flow = SAFE to market make
+            # BULLISH: More buyers - sell inside spread, avoid buying
             adjusted_mid = mid + (self.MID_SHIFT * spread)
-            buy_price = adjusted_mid - half_spread
-            sell_price = adjusted_mid + half_spread
-            buy_size = 100
+            
+            sell_price = adjusted_mid  # Inside spread - great price!
             sell_size = 100
-            #print(f"BULLISH (safe) - Buy @ {buy_price:.2f}, Sell @ {sell_price:.2f}")
+            
+            buy_price = adjusted_mid - spread  # Below bid - avoid buying
+            buy_size = 50
             
         elif book_imbalance < (1.0 / self.BOOK_THRESHOLD):
-            # BEARISH book + neutral flow = SAFE to market make
+            # BEARISH: More sellers - buy inside spread, avoid selling
             adjusted_mid = mid - (self.MID_SHIFT * spread)
-            buy_price = adjusted_mid - half_spread
-            sell_price = adjusted_mid + half_spread
+            
+            buy_price = adjusted_mid  # Inside spread - great price!
             buy_size = 100
-            sell_size = 100
-            #print(f"BEARISH (safe) - Buy @ {buy_price:.2f}, Sell @ {sell_price:.2f}")
+            
+            sell_price = adjusted_mid + spread  # Above ask - avoid selling
+            sell_size = 50
             
         else:
-            #print("Book neutral - sitting out")
             return
         
         buy_id = place_limit_order(Side.BUY, ticker, buy_size, buy_price, ioc=False)
