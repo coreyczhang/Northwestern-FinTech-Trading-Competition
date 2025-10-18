@@ -179,25 +179,21 @@ class Strategy:
         if not flow_is_neutral:
             return
         
-        # Exploit book imbalance with shifted mid
+        # Exploit book imbalance with competitive pricing
         if book_imbalance > self.BOOK_THRESHOLD:
-            # BULLISH: More buyers - sell inside spread, avoid buying
-            adjusted_mid = mid + (self.MID_SHIFT * spread)
-            
-            sell_price = adjusted_mid  # Inside spread - great price!
+            # BULLISH: More buyers - competitive sell, avoid buying
+            sell_price = mid + (self.MID_SHIFT * spread)  # Inside spread - competitive!
             sell_size = 100
             
-            buy_price = adjusted_mid - spread  # Below bid - avoid buying
+            buy_price = best_bid - (2.0 * spread)  # Far below - avoid buying
             buy_size = 50
             
         elif book_imbalance < (1.0 / self.BOOK_THRESHOLD):
-            # BEARISH: More sellers - buy inside spread, avoid selling
-            adjusted_mid = mid - (self.MID_SHIFT * spread)
-            
-            buy_price = adjusted_mid  # Inside spread - great price!
+            # BEARISH: More sellers - competitive buy, avoid selling
+            buy_price = mid - (self.MID_SHIFT * spread)  # Inside spread - competitive!
             buy_size = 100
             
-            sell_price = adjusted_mid + spread  # Above ask - avoid selling
+            sell_price = best_ask + (2.0 * spread)  # Far above - avoid selling
             sell_size = 50
             
         else:
