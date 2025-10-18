@@ -1,5 +1,6 @@
 from enum import Enum
 import time
+from collections import defaultdict, deque
 
 class Side(Enum):
     BUY = 0
@@ -11,162 +12,154 @@ class Ticker(Enum):
     LTC = 2
 
 def place_market_order(side: Side, ticker: Ticker, quantity: float) -> bool:
-    """Place a market order - DO NOT MODIFY
-
-    Parameters
-    ----------
-    side
-        Side of order to place (Side.BUY or Side.SELL)
-    ticker
-        Ticker of order to place (Ticker.ETH, Ticker.BTC, or "LTC")
-    quantity
-        Volume of order to place
-    """
     return True
 
 def place_limit_order(side: Side, ticker: Ticker, quantity: float, price: float, ioc: bool = False) -> int:
-    """Place a limit order - DO NOT MODIFY
-
-    Parameters
-    ----------
-    side
-        Side of order to place (Side.BUY or Side.SELL)
-    ticker
-        Ticker of order to place (Ticker.ETH, Ticker.BTC, or "LTC")
-    quantity
-        Volume of order to place
-    price
-        Price of order to place
-
-    Returns
-    -------
-    order_id
-    """
     return 0
 
 def cancel_order(ticker: Ticker, order_id: int) -> bool:
-    """Place a limit order - DO NOT MODIFY
-    Parameters
-    ----------
-    ticker
-        Ticker of order to place (Ticker.ETH, Ticker.BTC, or "LTC")
-    order_id
-        order_id returned by place_limit_order
-    """
     return True
 
-# You can use print() and view the logs after sandbox run has completed
-# Might help for debugging
 class Strategy:
-    """Crypto Market Maker - fee-aware, low-volatility optimized."""
-
     def __init__(self) -> None:
-        self.tickers = [Ticker.ETH, Ticker.BTC, Ticker.LTC]
-
-        self.best_bid = {t: None for t in self.tickers}
-        self.best_ask = {t: None for t in self.tickers}
-        self.prices_ts = {t: 0 for t in self.tickers}
-        self.last_reprice = 0.0
-        self.reprice_interval = 0.18  # slightly slower for low volatility
-        self.positions = {t: 0 for t in self.tickers}
-        self.capital = 100000
-        self.max_position = 50
-        self.order_book_orders = {t: {"buy": None, "sell": None} for t in self.tickers}
-        self.order_book_prices = {t: {"buy": None, "sell": None} for t in self.tickers}
-        self.order_size = 1
-        self.fee_rate = 0.004  # 0.4% per trade
-
-    def _safe_cancel(self, ticker: Ticker, side_str: str):
-        oid = self.order_book_orders[ticker][side_str]
-        if oid is not None:
-            try:
-                cancel_order(ticker, oid)
-            except Exception:
-                pass
-            self.order_book_orders[ticker][side_str] = None
-            self.order_book_prices[ticker][side_str] = None
-
-    def _place_limit(self, side: Side, ticker: Ticker, qty: float, price: float):
-        try:
-            oid = place_limit_order(side, ticker, qty, price, ioc=False)
-            if side == Side.BUY:
-                self.order_book_orders[ticker]["buy"] = oid
-                self.order_book_prices[ticker]["buy"] = price
+        # ===== CRYPTO CONFIG - 40 BIPS FEES =====
+        # Trade all 3 tickers to diversify
+        self.BOOK_THRESHOLD = 1.4   # Slightly lower for crypto (more conservative)
+        self.FLOW_MIN = 0.92        # Tighter flow bands (fees matter)
+        self.FLOW_MAX = 1.08
+        self.TRADE_WINDOW = 10
+        self.UPDATE_INTERVAL = 0.12 # Slower due to fees
+        self.MID_SHIFT = 0.35       # Wider to absorb 40 bips
+        self.BUY_SIZE = 60.0        # Smaller size (40 bips each way)
+        self.SELL_SIZE = 60.0
+        # ==========================================
+        
+        # Orderbook tracking
+        self.bids = defaultdict(dict)
+        self.asks = defaultdict(dict)
+        
+        # Trade flow tracking
+        self.recent_trades = defaultdict(deque)
+        
+        # Order management
+        self.active_orders = defaultdict(list)
+        
+        # Timing
+        self.last_update = defaultdict(float)
+        
+        print("Crypto Market Maker initialized - book imbalance + flow detection")
+    
+    def on_trade_update(self, ticker: Ticker, side: Side, quantity: float, price: float) -> None:
+        self.recent_trades[ticker].append({
+            'time': time.time(),
+            'side': side,
+            'qty': quantity
+        })
+        
+        cutoff = time.time() - 60
+        while self.recent_trades[ticker] and self.recent_trades[ticker][0]['time'] < cutoff:
+            self.recent_trades[ticker].popleft()
+    
+    def on_orderbook_update(
+        self, ticker: Ticker, side: Side, quantity: float, price: float
+    ) -> None:
+        if side == Side.BUY:
+            if quantity > 0:
+                self.bids[ticker][price] = quantity
             else:
-                self.order_book_orders[ticker]["sell"] = oid
-                self.order_book_prices[ticker]["sell"] = price
-        except Exception:
-            pass
-
-    def _manage_market_maker(self, ticker: Ticker):
-        bid = self.best_bid[ticker]
-        ask = self.best_ask[ticker]
-        if bid is None or ask is None:
+                self.bids[ticker].pop(price, None)
+        else:
+            if quantity > 0:
+                self.asks[ticker][price] = quantity
+            else:
+                self.asks[ticker].pop(price, None)
+        
+        if time.time() - self.last_update[ticker] < self.UPDATE_INTERVAL:
             return
-        mid = (bid + ask) / 2.0
-        spread = ask - bid
-
-        # Ensure spread covers fees
-        min_tick = mid * self.fee_rate  # smallest profitable spread
-        tick = max(min_tick, spread * 0.35)  # slightly larger for low volatility
-
-        target_buy = round(mid - tick, 8)
-        target_sell = round(mid + tick, 8)
-
-        pos = self.positions[ticker]
-        can_buy = pos < self.max_position and (self.capital > target_buy * self.order_size)
-        can_sell = pos > -self.max_position
-
-        # Profit-aware checks: net profit after fees
-        expected_profit = (target_sell - target_buy) * self.order_size - (target_sell + target_buy) * self.order_size * self.fee_rate
-        if expected_profit <= 0:
-            return  # skip orders that are not profitable after fees
-
-        # Cancel & replace buy
-        current_buy_price = self.order_book_prices[ticker]["buy"]
-        if current_buy_price is None or abs(current_buy_price - target_buy) > max(0.0001, 0.5 * tick):
-            self._safe_cancel(ticker, "buy")
-            if can_buy:
-                self._place_limit(Side.BUY, ticker, self.order_size, target_buy)
-
-        # Cancel & replace sell
-        current_sell_price = self.order_book_prices[ticker]["sell"]
-        if current_sell_price is None or abs(current_sell_price - target_sell) > max(0.0001, 0.5 * tick):
-            self._safe_cancel(ticker, "sell")
-            if can_sell:
-                self._place_limit(Side.SELL, ticker, self.order_size, target_sell)
-
-    def on_trade_update(self, ticker: Ticker, side: Side, price: float, quantity: float) -> None:
-        now = time.time()
-        if now - self.last_reprice > self.reprice_interval:
-            for t in self.tickers:
-                self._manage_market_maker(t)
-            self.last_reprice = now
-
-    def on_orderbook_update(self, ticker: Ticker, side: Side, price: float, quantity: float) -> None:
-        if side == Side.BUY:
-            self.best_bid[ticker] = price
-        elif side == Side.SELL:
-            self.best_ask[ticker] = price
-        self.prices_ts[ticker] = time.time()
-        now = time.time()
-        if now - self.last_reprice > self.reprice_interval:
-            for t in self.tickers:
-                self._manage_market_maker(t)
-            self.last_reprice = now
-
-    def on_account_update(self, ticker: Ticker, side: Side, price: float, quantity: float, capital_remaining: float) -> None:
-        if side == Side.BUY:
-            self.positions[ticker] += quantity
-        elif side == Side.SELL:
-            self.positions[ticker] -= quantity
-        self.capital = capital_remaining
-
-        # Safety: stop trading if max positions reached
-        if self.positions[ticker] >= self.max_position:
-            self._safe_cancel(ticker, "buy")
-        if self.positions[ticker] <= -self.max_position:
-            self._safe_cancel(ticker, "sell")
-
-        total_value = self.capital + sum(self.positions[t] * (self.best_bid[t] if self.best_bid[t] else 0) for t in self.tickers)
-        print(f"Portfolio Value: {total_value:.2f}")
+        self.last_update[ticker] = time.time()
+        
+        self.update_quotes(ticker)
+    
+    def on_account_update(
+        self,
+        ticker: Ticker,
+        side: Side,
+        price: float,
+        quantity: float,
+        capital_remaining: float,
+    ) -> None:
+        pass
+    
+    def get_book_imbalance(self, ticker: Ticker) -> float:
+        if not self.bids[ticker] or not self.asks[ticker]:
+            return 1.0
+        
+        bid_qty = sum(self.bids[ticker].values())
+        ask_qty = sum(self.asks[ticker].values())
+        
+        if ask_qty == 0:
+            return 5.0
+        return bid_qty / ask_qty
+    
+    def get_flow_imbalance(self, ticker: Ticker) -> float:
+        cutoff = time.time() - self.TRADE_WINDOW
+        
+        aggressive_buys = 0.0
+        aggressive_sells = 0.0
+        
+        for trade in self.recent_trades[ticker]:
+            if trade['time'] > cutoff:
+                if trade['side'] == Side.BUY:
+                    aggressive_buys += trade['qty']
+                else:
+                    aggressive_sells += trade['qty']
+        
+        if aggressive_sells == 0:
+            return 5.0 if aggressive_buys > 0 else 1.0
+        return aggressive_buys / aggressive_sells
+    
+    def update_quotes(self, ticker: Ticker):
+        """Market make when book is imbalanced BUT flow is neutral"""
+        if not self.bids[ticker] or not self.asks[ticker]:
+            return
+        
+        book_imbalance = self.get_book_imbalance(ticker)
+        flow_imbalance = self.get_flow_imbalance(ticker)
+        
+        # Cancel all active orders
+        for order_id in self.active_orders[ticker]:
+            cancel_order(ticker, order_id)
+        self.active_orders[ticker] = []
+        
+        best_bid = max(self.bids[ticker].keys())
+        best_ask = min(self.asks[ticker].keys())
+        mid = (best_bid + best_ask) / 2
+        spread = best_ask - best_bid
+        half_spread = spread / 2
+        
+        # CHECK: Flow must be neutral (avoid adverse selection)
+        flow_is_neutral = self.FLOW_MIN <= flow_imbalance <= self.FLOW_MAX
+        
+        if not flow_is_neutral:
+            return  # Don't trade if flow is skewed - too risky
+        
+        # Now check book imbalance (flow is safe)
+        if book_imbalance > self.BOOK_THRESHOLD:
+            # BULLISH book + neutral flow = SAFE to market make
+            adjusted_mid = mid + (self.MID_SHIFT * spread)
+            buy_price = adjusted_mid - half_spread
+            sell_price = adjusted_mid + half_spread
+            
+        elif book_imbalance < (1.0 / self.BOOK_THRESHOLD):
+            # BEARISH book + neutral flow = SAFE to market make
+            adjusted_mid = mid - (self.MID_SHIFT * spread)
+            buy_price = adjusted_mid - half_spread
+            sell_price = adjusted_mid + half_spread
+            
+        else:
+            return  # Book neutral - don't pay fees
+        
+        buy_id = place_limit_order(Side.BUY, ticker, self.BUY_SIZE, buy_price, ioc=False)
+        sell_id = place_limit_order(Side.SELL, ticker, self.SELL_SIZE, sell_price, ioc=False)
+        
+        self.active_orders[ticker] = [buy_id, sell_id]
