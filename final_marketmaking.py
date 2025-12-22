@@ -25,7 +25,7 @@ class Strategy:
     def __init__(self) -> None:
         # ===== CONFIGURATION =====
         self.TRADE_TICKER = Ticker.LTC
-        self.BOOK_THRESHOLD = 1.7  # Strong book imbalance needed
+        self.BOOK_THRESHOLD = 1.8  # Strong book imbalance needed
         self.FLOW_MIN = 0.90  # Flow must be between 0.95-1.05 (neutral)
         self.FLOW_MAX = 1.10
         self.TRADE_WINDOW = 10
