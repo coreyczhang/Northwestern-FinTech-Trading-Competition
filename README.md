@@ -1,94 +1,82 @@
-# Cryptocurrency Market Making Strategy - NUTC 2025
+# Northwestern FinTech Trading Competition — Market Making Strategies
 
-An algorithmic market-making strategy developed for the Northwestern University Trading Competition (NUTC), achieving **top 20% placement** among competing teams.
+Two C++ market making strategies built for the Northwestern FinTech Trading Competition. **Finished top 20% of competing teams.**
 
-## Overview
-
-This strategy implements an adaptive market maker that exploits order book imbalances while filtering out adverse selection from informed traders. The algorithm continuously monitors both passive liquidity (order book depth) and aggressive order flow to identify profitable market-making opportunities in cryptocurrency markets.
-
-## Strategy Logic
-
-### Core Concept: Biased Market Making with Flow Filtering
-
-The strategy identifies market conditions where one side of the order book has significantly more liquidity than the other, indicating potential short-term price movement. However, unlike naive approaches, it includes a critical **flow filter** to avoid getting picked off by informed traders.
-
-### Key Components
-
-**1. Order Book Imbalance Detection**
-```
-Imbalance Ratio = Total Bid Quantity / Total Ask Quantity
-```
-- **Bullish Signal** (ratio > 1.75): More buyers stacking bids
-- **Bearish Signal** (ratio < 0.57): More sellers stacking asks
-- **Neutral** (0.57-1.75): No clear directional pressure
-
-**2. Trade Flow Analysis**
-```
-Flow Ratio = Aggressive Buys / Aggressive Sells (last 10 seconds)
-```
-The strategy tracks "aggressive" orders (market orders) to detect informed trading activity. If flow becomes imbalanced (>1.10 or <0.90), the strategy **stands aside** to avoid adverse selection.
-
-**3. Adaptive Quote Placement**
-
-When conditions are favorable (strong book imbalance + neutral flow):
-
-- **Competitive Side**: Places order *inside* the spread (mid ± 0.25 spread) with large size (100 units)
-- **Defensive Side**: Places order *far from* the market (best ± 2.0 spread) with small size (50 units)
-
-This asymmetric approach captures profits from the imbalance while maintaining exchange connectivity requirements.
-
-## Technical Implementation
-
-### Architecture
-
-- **Event-driven design**: Reacts to order book and trade updates in real-time
-- **Efficient data structures**: Uses `defaultdict` and `deque` for O(1) order book lookups and rolling window calculations
-- **Rate limiting**: Updates quotes maximum once per 100ms to avoid excessive messaging
-- **Active order management**: Cancels and replaces orders on each update for precise price control
-
-### Configuration Parameters
-```python
-TRADE_TICKER = Ticker.LTC          # Focus on single asset for liquidity
-BOOK_THRESHOLD = 1.75              # Minimum imbalance to trade
-FLOW_MIN/MAX = 0.90/1.10           # Neutral flow bounds
-TRADE_WINDOW = 10                  # Flow calculation window (seconds)
-MID_SHIFT = 0.25                   # Competitive quote positioning
-```
-
-### Performance Tracking
-
-Built-in metrics system tracks:
-- Total trades executed
-- Buy/sell fill distribution
-- 30-second rolling statistics
-- Real-time imbalance diagnostics
-
-## Results
-
-- **Competition Rank**: Top 20% of participants
-- **Primary Market**: LTC (Litecoin)
-- **Strategy Type**: Statistical arbitrage via imbalance exploitation
-
-## Key Insights
-
-1. **Flow filtering is critical**: Naive imbalance trading gets picked off by informed orders. The flow filter prevents this.
-
-2. **Asymmetric sizing**: Small size on the defensive side prevents inventory buildup while maintaining exchange requirements.
-
-3. **Fast cancellation**: Replacing orders on every update (vs. letting them rest) provides better price control in volatile conditions.
-
-## Technical Skills Demonstrated
-
-- Algorithmic trading strategy development
-- Real-time data processing and event-driven architecture
-- Statistical signal generation (order book analytics, flow analysis)
-- Risk management through position sizing and flow filtering
-- Python optimization for low-latency trading
-
-## Competition Context
-
-The Northwestern University Trading Competition (NUTC) is a quantitative trading competition where teams develop algorithmic strategies to compete in simulated market environments. This market-making case required balancing profitability with inventory risk and adverse selection.
+Both strategies implement event-driven architectures responding to live order book and trade feed updates.
 
 ---
 
-**Note**: This code is designed for the NUTC simulation environment. The strategy demonstrates core market-making principles but would require additional risk controls, latency optimization, and exchange-specific adaptations for production deployment.
+## Strategies
+
+### 1. Multi-Asset Market Maker (`crypto_marketmaking.cpp`)
+
+Quotes bid and ask simultaneously across ETH, BTC, and LTC. Reprices every **1ms**.
+
+**Key logic:**
+- **Inventory skew** — shifts quotes toward reducing position. Long inventory: buy quote moves down. Short inventory: sell quote moves up.
+- **Momentum filter** — computes short (3-tick) vs long (12-tick) moving average ratio over a 32-sample ring buffer. Cancels the quote on the trending side and scalps with a market order in the trend direction.
+- **Dynamic spread** — spread is proportional to the current best bid/ask spread with a minimum floor, scaled by `SPREAD_FACTOR = 0.25`.
+- **Hard inventory cap** — `MAX_POS = 250` units per asset. Excess immediately liquidated via market order.
+
+**Parameters:**
+| Parameter | Value | Description |
+|---|---|---|
+| `REPRICE_MS` | 1 | Repricing interval (ms) |
+| `SPREAD_FACTOR` | 0.25 | Quote offset as fraction of spread |
+| `MAX_POS` | 250 | Max inventory per asset |
+| `MOM_TH` | 0.0025 | Momentum threshold (0.25%) |
+| `PH_SZ` | 32 | Price history ring buffer size |
+
+---
+
+### 2. Flow Imbalance Strategy (`hft_marketmaking.cpp`)
+
+Single-asset (LTC) strategy focused on adverse selection avoidance. Reprices every **50ms**.
+
+**Key logic:**
+- **Flow neutrality gate** — computes aggressive buy/sell volume ratio over a 10-second rolling window. Only quotes when flow is balanced (`FLOW_MIN = 0.95`, `FLOW_MAX = 1.05`). Steps out entirely during one-sided flow to avoid being picked off by informed traders.
+- **Book imbalance signal** — computes total bid vs ask depth ratio. Only quotes when the book shows a directional bias (`BOOK_THRESHOLD = 1.5`). Shifts the mid price toward the heavier side by `MID_SHIFT = 0.25` spreads.
+- **Dual gate** — both flow and book conditions must be met simultaneously to place orders. Neutral book = sit out.
+
+**Parameters:**
+| Parameter | Value | Description |
+|---|---|---|
+| `UPDATE_INTERVAL` | 0.05s | Repricing interval |
+| `BOOK_THRESHOLD` | 1.5 | Min bid/ask depth ratio to quote |
+| `FLOW_MIN / FLOW_MAX` | 0.95 / 1.05 | Flow neutrality band |
+| `MID_SHIFT` | 0.25 | Quote shift as fraction of spread |
+| `TRADE_WINDOW` | 10s | Rolling window for flow calculation |
+
+---
+
+## Interactive Demo
+
+A live Streamlit simulation of both strategies is in the `demo/` directory.
+
+```bash
+cd demo
+pip install -r requirements.txt
+streamlit run app.py --server.port 8502
+```
+
+Simulates GBM price process, Poisson-distributed fills, and real-time PnL tracking. Runs at `localhost:8502`.
+
+---
+
+## Architecture
+
+Both strategies implement the same three-callback interface expected by the competition exchange:
+
+```cpp
+void on_trade_update(Ticker, Side, float quantity, float price);
+void on_orderbook_update(Ticker, Side, float quantity, float price);
+void on_account_update(Ticker, Side, float price, float quantity, float capital_remaining);
+```
+
+No external dependencies. C++17.
+
+---
+
+## Design Notes
+
+`crypto_marketmaking.cpp` prioritizes throughput — quoting all three assets at 1ms with inventory management and momentum filtering. `hft_marketmaking.cpp` prioritizes selectivity — only quoting when both flow and book conditions align, accepting fewer fills in exchange for lower adverse selection risk. The two strategies reflect a core market making tradeoff: fill rate vs toxicity.
